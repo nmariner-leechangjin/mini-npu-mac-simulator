@@ -39,6 +39,21 @@ def classify_scores(score_cross: float, score_x: float, epsilon: float = EPSILON
     return "Cross" if score_cross > score_x else "X"
 
 
+def generate_pattern(size: int, label: str) -> List[List[int]]:
+    """Generate an odd-sized binary Cross or X pattern for the bonus task."""
+    normalized = normalize_label(label)
+    if size < 3 or size % 2 == 0 or normalized not in {"Cross", "X"}:
+        raise ValueError("크기는 3 이상의 홀수이고 라벨은 Cross 또는 X여야 합니다.")
+    center = size // 2
+    return [
+        [
+            int((row == center or column == center) if normalized == "Cross" else (row == column or row + column == size - 1))
+            for column in range(size)
+        ]
+        for row in range(size)
+    ]
+
+
 def validate_grid(grid: Any, size: int) -> Tuple[bool, str]:
     if not isinstance(grid, list) or len(grid) != size:
         return False, f"행 수가 {size}와 다릅니다."
@@ -103,6 +118,21 @@ def run_user_mode() -> None:
     print(f"판정: {result}")
     print(f"연산 시간(ms): {benchmark(pattern, filter_a):.6f} (10회 평균)")
     print_performance_table([(3, pattern, filter_a)])
+
+
+def run_generator_mode() -> None:
+    while True:
+        try:
+            size = int(input("생성할 크기 N을 입력하세요 (3 이상의 홀수): ").strip())
+            label = input("생성할 패턴을 입력하세요 (Cross/+ 또는 X/x): ").strip()
+            grid = generate_pattern(size, label)
+            break
+        except ValueError as error:
+            print(f"입력 오류: {error}")
+    print(f"\n[자동 생성 결과: {size}×{size}, {normalize_label(label)}]")
+    for row in grid:
+        print(" ".join(str(value) for value in row))
+    print(f"자기 패턴과의 MAC 점수: {mac_score(grid, grid):.6f}")
 
 
 def extract_size(key: str) -> Optional[int]:
@@ -196,6 +226,7 @@ def main() -> None:
     print("=== Mini NPU MAC 시뮬레이터 ===")
     print("1. 사용자 입력(3×3)")
     print("2. data.json 분석")
+    print("3. 보너스: Cross/X 패턴 자동 생성")
     while True:
         choice = input("모드를 선택하세요 (1/2): ").strip()
         if choice == "1":
@@ -203,6 +234,9 @@ def main() -> None:
             return
         if choice == "2":
             analyze_json(Path(__file__).with_name("data.json"))
+            return
+        if choice == "3":
+            run_generator_mode()
             return
         print("입력 오류: 1 또는 2를 선택하세요.")
 
