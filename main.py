@@ -24,6 +24,23 @@ def normalize_label(value: Any) -> Optional[str]:
     return None
 
 
+def normalize_filter_key(value: Any) -> Optional[str]:
+    """Normalize a filter dictionary key through the same label policy."""
+    return normalize_label(value)
+
+
+def get_filter(filters: Dict[str, Any], size: int, label: str) -> Tuple[Optional[Any], str]:
+    """Find a size filter by normalized label, regardless of key spelling."""
+    size_key = f"size_{size}"
+    size_filters = filters.get(size_key)
+    if not isinstance(size_filters, dict):
+        return None, f"필터 그룹 키 {size_key}가 없습니다."
+    for raw_key, grid in size_filters.items():
+        if normalize_filter_key(raw_key) == label:
+            return grid, ""
+    return None, f"{size_key}에서 {label} 필터 키를 찾지 못했습니다."
+
+
 def mac_score(pattern: Sequence[Sequence[float]], filter_grid: Sequence[Sequence[float]]) -> float:
     """Calculate sum(pattern[i][j] * filter_grid[i][j]) using explicit loops."""
     return sum(
@@ -74,7 +91,7 @@ def parse_grid_lines(size: int, title: str) -> List[List[float]]:
             raw = input(f"{row_number}/{size}> ").strip()
             parts = raw.split()
             if len(parts) != size:
-                print(f"입력 형식 오류: 각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요.")
+                print(f"입력 형식 오류: 각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요. 예: {' '.join(['0'] * size)}")
                 valid = False
                 break
             try:
@@ -112,10 +129,12 @@ def run_user_mode() -> None:
     score_a = mac_score(pattern, filter_a)
     score_b = mac_score(pattern, filter_b)
     result = classify_scores(score_a, score_b)
+    display_result = {"Cross": "A", "X": "B", "UNDECIDED": "판정 불가"}[result]
     print("\n[사용자 입력 결과]")
+    print("입력 패턴을 필터 A와 필터 B에 각각 MAC 비교했습니다.")
     print(f"필터 A MAC 점수: {score_a:.6f}")
     print(f"필터 B MAC 점수: {score_b:.6f}")
-    print(f"판정: {result}")
+    print(f"판정: {display_result}")
     print(f"연산 시간(ms): {benchmark(pattern, filter_a):.6f} (10회 평균)")
     print_performance_table([(3, pattern, filter_a)])
 
@@ -157,7 +176,9 @@ def analyze_json(path: Path) -> None:
 
     all_cases: List[Tuple[int, List[List[float]], List[List[float]]]] = []
     failures: List[Tuple[str, str]] = []
+    failure_reason_counts: Dict[str, int] = {}
     passed = 0
+    undecided_count = 0
 
     for case_id, case in patterns.items():
         reason = ""
@@ -176,16 +197,18 @@ def analyze_json(path: Path) -> None:
                 if not valid:
                     reason = f"패턴 크기/값 검증 실패: {validation_reason}"
                 else:
-                    cross_filter = filters.get(f"size_{size}", {}).get("cross") if isinstance(filters.get(f"size_{size}"), dict) else None
-                    x_filter = filters.get(f"size_{size}", {}).get("x") if isinstance(filters.get(f"size_{size}"), dict) else None
+                    cross_filter, cross_lookup_reason = get_filter(filters, size, "Cross")
+                    x_filter, x_lookup_reason = get_filter(filters, size, "X")
                     valid_cross, cross_reason = validate_grid(cross_filter, size)
                     valid_x, x_reason = validate_grid(x_filter, size)
                     if not valid_cross or not valid_x:
-                        reason = f"필터 크기/값 검증 실패: {cross_reason or x_reason}"
+                        reason = f"필터 크기/값 검증 실패: {cross_lookup_reason or x_lookup_reason or cross_reason or x_reason}"
                     else:
                         score_cross = mac_score(pattern, cross_filter)
                         score_x = mac_score(pattern, x_filter)
                         result = classify_scores(score_cross, score_x)
+                        if result == "UNDECIDED":
+                            undecided_count += 1
                         status = "PASS" if result == expected else "FAIL"
                         print(f"{case_id}: Cross={score_cross:.6f}, X={score_x:.6f}, 판정={result}, expected={expected}, {status}")
                         if status == "PASS":
@@ -195,6 +218,8 @@ def analyze_json(path: Path) -> None:
                         all_cases.append((size, pattern, cross_filter))
         if reason:
             failures.append((str(case_id), reason))
+            category = "데이터/스키마" if "키" in reason or "필터" in reason or "크기" in reason or "라벨" in reason else "로직/비교"
+            failure_reason_counts[category] = failure_reason_counts.get(category, 0) + 1
             print(f"{case_id}: FAIL - {reason}")
 
     performance_cases: List[Tuple[int, Sequence[Sequence[float]], Sequence[Sequence[float]]]] = []
@@ -203,7 +228,7 @@ def analyze_json(path: Path) -> None:
         pattern_case = next((case for case_id, case in patterns.items() if extract_size(str(case_id)) == size and isinstance(case, dict) and isinstance(case.get("input"), list)), None)
         if isinstance(filter_set, dict) and isinstance(pattern_case, dict):
             pattern = pattern_case["input"]
-            filter_grid = filter_set.get("cross")
+            filter_grid, _ = get_filter(filters, size, "Cross")
             if validate_grid(pattern, size)[0] and validate_grid(filter_grid, size)[0]:
                 performance_cases.append((size, pattern, filter_grid))
     if performance_cases:
@@ -214,6 +239,9 @@ def analyze_json(path: Path) -> None:
     print(f"전체 테스트 수: {total}")
     print(f"통과 수: {passed}")
     print(f"실패 수: {len(failures)}")
+    print(f"UNDECIDED 수: {undecided_count}")
+    if failure_reason_counts:
+        print("실패 원인 분류: " + ", ".join(f"{category}={count}" for category, count in failure_reason_counts.items()))
     if failures:
         print("실패 케이스 목록:")
         for case_id, reason in failures:
@@ -228,7 +256,7 @@ def main() -> None:
     print("2. data.json 분석")
     print("3. 보너스: Cross/X 패턴 자동 생성")
     while True:
-        choice = input("모드를 선택하세요 (1/2): ").strip()
+        choice = input("모드를 선택하세요 (1/2/3): ").strip()
         if choice == "1":
             run_user_mode()
             return
@@ -238,7 +266,7 @@ def main() -> None:
         if choice == "3":
             run_generator_mode()
             return
-        print("입력 오류: 1 또는 2를 선택하세요.")
+        print("입력 오류: 1, 2 또는 3을 선택하세요.")
 
 
 if __name__ == "__main__":
